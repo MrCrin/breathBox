@@ -4,7 +4,7 @@
 
 // Change the next defines to match your matrix type and size
 #define ledControl          6
-#define button              10
+#define button              2
 #define batteryMonitor      14
 
 #define COLOR_ORDER         GRB
@@ -23,6 +23,11 @@
 //Startup Config
 int mode = 0;
 uint8_t rotatingHue = 0;
+
+//Button stuff
+int timePressed = 0;
+int buttonState = 0;
+int buttonLatch = 0;
 
 // create our matrix based on matrix definition
 cLEDMatrix<MATRIX_WIDTH, MATRIX_HEIGHT, MATRIX_TYPE> matrix;
@@ -48,21 +53,21 @@ int batteryCheck() {
     battPerc = perc;
 }
 
-void buttonPress() {
-    Serial.println("Button pressed");
-    if (mode < 4) {
-        mode++;
+void buttonChange() {
+    if (digitalRead(button)==HIGH)
+    {
+        timePressed = millis();
+        buttonState = 1;
     } else {
-        mode = 1;
+        timePressed = 0;
+        buttonState = 0;
     }
-    FastLED.delay(200);
-    batteryCheck();
 }
 
 void breatheIn(int hue, int duration) {
     matrix.DrawRectangle(0, 0, 7, 7, CHSV(hue, 255, breatheEdgeLight));
     for (float i = 10; i < 255; i++) {
-        if (digitalRead(button) == HIGH) {
+        if (buttonState == 1) {
             break;
         }
         matrix.DrawFilledRectangle(1, 1, 6, 6, CHSV(hue, 255, i));
@@ -74,7 +79,7 @@ void breatheIn(int hue, int duration) {
 void breatheOut(int hue, int duration) {
     matrix.DrawRectangle(0, 0, 7, 7, CHSV(hue, 255, breatheEdgeLight));
     for (float i = 255; i > 10; i--) {
-        if (digitalRead(button) == HIGH) {
+        if (buttonState == 1) {
             break;
         }
         matrix.DrawFilledRectangle(1, 1, 6, 6, CHSV(hue, 255, i));
@@ -87,7 +92,7 @@ void holdIn(int hue, int duration) {
     matrix.DrawRectangle(0, 0, 7, 7, CHSV(hue, 255, breatheEdgeLight));
     for (float j = 0; j < duration; j++) {
         for (float i = 255; i > 190; i--) {
-            if (digitalRead(button) == HIGH) {
+            if (buttonState == 1) {
                 break;
             }
             matrix.DrawFilledRectangle(1, 1, 6, 6, CHSV(hue, i, i));
@@ -95,7 +100,7 @@ void holdIn(int hue, int duration) {
             FastLED.delay(4);
         }
         for (float i = 190; i < 255; i++) {
-            if (digitalRead(button) == HIGH) {
+            if (buttonState == 1) {
                 break;
             }
             matrix.DrawFilledRectangle(1, 1, 6, 6, CHSV(hue, i, i));
@@ -110,7 +115,7 @@ void holdOut(int hue, int duration) {
     matrix.DrawRectangle(0, 0, 7, 7, CHSV(hue, 255, breatheEdgeLight));
     for (float j = 0; j < duration; j++) {
         for (float i = 0; i < 65; i++) {
-            if (digitalRead(button) == HIGH) {
+            if (buttonState == 1) {
                 break;
             }
             matrix.DrawFilledRectangle(1, 1, 6, 6, CHSV(hue, 255, i));
@@ -118,7 +123,7 @@ void holdOut(int hue, int duration) {
             FastLED.delay(4);
         }
         for (float i = 65; i > 1; i--) {
-            if (digitalRead(button) == HIGH) {
+            if (buttonState == 1) {
                 break;
             }
             matrix.DrawFilledRectangle(1, 1, 6, 6, CHSV(hue, 255, i));
@@ -137,21 +142,21 @@ void startWait() {
         //Do nothing - get another set of coordinates
     } else {
         for (float i = 0; i < 255; i++) {
-            if (digitalRead(button) == HIGH) {
+            if (buttonState == 1) {
                 break;
             }
             matrix.DrawPixel(x, y, CHSV(c, 255, i));
             matrix.DrawFilledRectangle(3, 3, 4, 4, CHSV(255, 0, 100));
-            FastLED.delay(1);
+            FastLED.delay(10);
             FastLED.show();
         }
         for (float i = 255; i > 0; i--) {
-            if (digitalRead(button) == HIGH) {
+            if (buttonState == 1) {
                 break;
             }
             matrix.DrawPixel(x, y, CHSV(c, 255, i));
             matrix.DrawFilledRectangle(3, 3, 4, 4, CHSV(255, 0, 100));
-            FastLED.delay(1);
+            FastLED.delay(10);
             FastLED.show();
         }
     }
@@ -188,7 +193,7 @@ void ujjayiPranayama(int hue) {
 
 void setup()
 {
-    batteryCheck();
+
     Serial.begin(9600);
     Serial.println("Serial monitor started");
     // initial LEDs
@@ -198,8 +203,9 @@ void setup()
     FastLED.clear(true);
     pinMode(ledControl, OUTPUT);
     pinMode(button, INPUT);
+    attachInterrupt(digitalPinToInterrupt(button), buttonChange, CHANGE);
     pinMode(batteryMonitor, INPUT);
-
+    batteryCheck();
     if (battPerc > 50) {
         battHue = 86;
     } else if (battPerc > 25) {
@@ -217,15 +223,29 @@ void setup()
         FastLED.delay(30);
         FastLED.show();
     }
-    FastLED.delay(200);
 }
 
 void loop()
 {
     if (battPerc > 10) {
-        if (digitalRead(button) == HIGH) {
-            buttonPress();
+        if (buttonState==1) {
+            buttonLatch=1;
+            while(buttonState==1) {
+                FastLED.clear();
+                matrix.DrawRectangle(0, 0, 7, 7, CHSV(255, 0, 100));
+                FastLED.delay(50);
+            }
         } else {
+            if (buttonLatch==1) {
+                if (mode < 4) {
+                    mode++;
+                    Serial.println("Moved forward one mode");
+                } else {
+                    mode = 1;
+                    Serial.println("Moving back to start of modes");
+                }
+                buttonLatch=0;
+            }
             switch (mode) {
             case 0:
                 startWait();

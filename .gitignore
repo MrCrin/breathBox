@@ -2,3 +2,5 @@
 /FastLED-GFX/
 /LEDMatrix/
 *.hex
+breathBoxSource/breathBoxSublimeProject.sublime-project
+breathBoxSource/breathBoxSublimeProject.sublime-workspace
