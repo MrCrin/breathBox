@@ -130,8 +130,8 @@ void holdOut(int hue, int duration) {
 
 void startWait() {
     FastLED.clear();
-    int x = random(2, 5);
-    int y = random(2, 5);
+    int x = random(2, 6);
+    int y = random(2, 6);
     int c = random(255);
     if((x==3&&y==3)||(x==3&&y==4)||(x==4&&y==3)||(x==4&&y==4)) {
         //Do nothing - get another set of coordinates
