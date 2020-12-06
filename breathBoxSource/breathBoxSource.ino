@@ -20,6 +20,7 @@
 //Light Level Globals
 #define breatheEdgeLight 120
 int masterBrightness = 255;
+int currentBrightness = masterBrightness;
 
 //Startup Config
 int mode = 0;
@@ -71,27 +72,33 @@ void buttonChange() {
     }
 }
 
-int fadeMasterBrightness(int v){
-    if (masterBrightness!=v)
+int fadecurrentBrightness(int v){
+    if (currentBrightness!=v)
     {
-        Serial.print("Fading masterBrightness to: ");
+        Serial.print("Fading currentBrightness to: ");
         Serial.println(v);
-        if (masterBrightness>v) {
+        if (currentBrightness>v) {
             for (int i = 255; i > v; i--) {
-                FastLED.setBrightness(masterBrightness);
+                if (buttonState == 1) {
+                    break;
+                }
+                FastLED.setBrightness(currentBrightness);
                 FastLED.show();
                 FastLED.delay(5);
-                masterBrightness = i;
+                currentBrightness = i;
             }
         } else {
             for (int i = 255; i < v; i++) {
-                FastLED.setBrightness(masterBrightness);
+                if (buttonState == 1) {
+                    break;
+                }
+                FastLED.setBrightness(currentBrightness);
                 FastLED.show();
                 FastLED.delay(5);
-                masterBrightness = i;
+                currentBrightness = i;
             }
         }
-        masterBrightness = v;
+        currentBrightness = v;
     }
 }
 
@@ -165,7 +172,7 @@ void holdOut(int hue, int duration) {
 }
 
 void standby(){ //Draws ≈ 18mA draw at peak
-    fadeMasterBrightness(0);
+    fadecurrentBrightness(0);
     FastLED.clear();
     waitCountdownBegun = 0;
     FastLED.delay(10);
@@ -206,42 +213,98 @@ void startWait() { //Draws ≈ 90mA draw at peak
         }
     } else {
         Serial.println("Switching to standby");
+        waitCountdownBegun = 0;
         mode = 5;
     }
 }
 
-void box(int hue) { // Draws ≈ 310mA at peak
+void box(int hue, int cycles) { // Draws ≈ 310mA at peak
     Serial.println("Box sequence started");
-    breatheIn(hue, 4);
-    holdIn(hue, 4);
-    breatheOut(hue, 4);
-    holdOut(hue, 4);
+    int cyclesComplete;
+    for (int i = 0; i <= cycles; i++) {
+        if (buttonState == 1) {
+            break;
+        }
+        breatheIn(hue, 4);
+        holdIn(hue, 4);
+        breatheOut(hue, 4);
+        holdOut(hue, 4);
+        cyclesComplete = i;
+        Serial.print("Cycle ");
+        Serial.println(cyclesComplete);
+    }
+    if (cyclesComplete==cycles)
+    {
+        mode = 0;
+        Serial.println("Box sequence complete");
+    }
 }
 
-void triangle(int hue) { // Draws ≈ 340mA at peak
+void triangle(int hue, int cycles) { // Draws ≈ 340mA at peak
     Serial.println("Triangle sequence started");
-    breatheIn(hue, 4);
-    holdIn(hue, 4);
-    breatheOut(hue, 4);
+    int cyclesComplete;
+    for (int i = 0; i <= cycles; i++) {
+        if (buttonState == 1) {
+            break;
+        }
+        breatheIn(hue, 4);
+        holdIn(hue, 4);
+        breatheOut(hue, 4);
+        cyclesComplete = i;
+        Serial.print("Cycle ");
+        Serial.println(cyclesComplete);
+    }
+    if (cyclesComplete==cycles)
+    {
+        mode = 0;
+        Serial.println("Triangle sequence complete");
+    }
 }
 
-void relax(int hue) { // Draws ≈ 340mA at peak
+void relax(int hue, int cycles) { // Draws ≈ 340mA at peak
     Serial.println("Relax sequence started");
-    breatheIn(hue, 4);
-    holdIn(hue, 7);
-    breatheOut(hue, 8);
+    int cyclesComplete;
+    for (int i = 0; i <= cycles; i++) {
+        if (buttonState == 1) {
+            break;
+        }
+        breatheIn(hue, 4);
+        holdIn(hue, 7);
+        breatheOut(hue, 8);
+        cyclesComplete = i;
+        Serial.print("Cycle ");
+        Serial.println(cyclesComplete);
+    }
+    if (cyclesComplete==cycles)
+    {
+        mode = 0;
+        Serial.println("Relax sequence complete");
+    }
 }
 
-void ujjayiPranayama(int hue) { // Draws ≈ 330mA at peak
+void ujjayiPranayama(int hue, int cycles) { // Draws ≈ 330mA at peak
     Serial.println("Ujjayi sequence started");
-    breatheIn(hue, 4);
-    holdIn(hue, 7);
-    breatheOut(hue, 8);
+    int cyclesComplete;
+    for (int i = 0; i <= cycles; i++) {
+        if (buttonState == 1) {
+            break;
+        }
+        breatheIn(hue, 4);
+        breatheOut(hue, 4);
+        cyclesComplete = i;
+        Serial.print("Cycle ");
+        Serial.println(cyclesComplete);
+    }
+    if (cyclesComplete==cycles)
+    {
+        mode = 0;
+        Serial.println("Ujjayi sequence complete");
+    }
 }
 
 void setup()
 {
-
+    Serial.println("Hello world!");
     Serial.begin(9600);
     Serial.println("Serial monitor started");
     // initial LEDs
@@ -273,19 +336,49 @@ void setup()
     }
 }
 
-void loop()
-{
+void loop() {
     timeNow = millis();
     if (battPerc > 10) {
         if (buttonState==1) {
             buttonLatch=1;
-            while(buttonState==1) { // Draws ≈ 175mA
-                FastLED.clear();
+            while(currentBrightness>0) { // Draws ≈ 175mA
+                if (buttonState == 0) {
+                    break;
+                }
+                FastLED.setBrightness(currentBrightness);
+                currentBrightness=currentBrightness-50;
+                FastLED.show();
+                FastLED.delay(20);
+            }
+            FastLED.clear();
+            currentBrightness = 0;
+            FastLED.setBrightness(currentBrightness);
+            FastLED.show();
+            while(currentBrightness<250) { // Draws ≈ 175mA
+                if (buttonState == 0) {
+                    break;
+                }
                 matrix.DrawRectangle(0, 0, 7, 7, CHSV(255, 0, 100));
+                FastLED.setBrightness(currentBrightness);
+                currentBrightness=currentBrightness+50;
+                FastLED.show();
+                FastLED.delay(20);
+            }
+            currentBrightness = masterBrightness;
+            FastLED.setBrightness(currentBrightness);
+            while(buttonState==1) { // Draws ≈ 175mA
+                matrix.DrawRectangle(0, 0, 7, 7, CHSV(255, 0, 100));
+                FastLED.show();
                 FastLED.delay(50);
             }
         } else {
             if (buttonLatch==1) {
+                FastLED.setBrightness(currentBrightness);
+                if (mode==5)
+                {
+                    Serial.println("Woken up from standby");
+                    mode = 1;
+                }
                 if (mode < 4) {
                     mode++;
                     Serial.println("Moved forward one mode");
@@ -300,16 +393,16 @@ void loop()
                 startWait();
                 break;
             case 1:
-                box(120);
+                box(120, 4);
                 break;
             case 2:
-                triangle(200);
+                triangle(200, 4);
                 break;
             case 3:
-                relax(50);
+                relax(50, 4);
                 break;
             case 4:
-                ujjayiPranayama(15);
+                ujjayiPranayama(15, 4);
                 break;
             case 5:
                 standby();
