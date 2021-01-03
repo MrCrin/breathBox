@@ -1,7 +1,9 @@
 #include <FastLED.h>        //https://github.com/FastLED/FastLED
 #include <FastLED_GFX.h>    //needs a link
 #include <LEDMatrix.h>      //https://github.com/Jorgen-VikingGod/LEDMatrix
-#include <Wire.h>
+#include <Wire.h>           //I2C Interfacing
+#include <avr/wdt.h>        //Watchdog for MPU hangs
+#include <MPU6050.h>        //MPU6050 Library
 
 // Pins
 #define ledControl          6
@@ -31,15 +33,13 @@ int ambientLight = analogRead(ldrSensor);
 
 //Stuff for gyroscope
 int tilt = 0;
-const int MPU_ADDR = 0x68;
-int16_t accelerometer_x, accelerometer_y, accelerometer_z; // variables for accelerometer raw data
-int16_t gyro_x, gyro_y, gyro_z; // variables for gyro raw data
-int16_t temperature; // variables for temperature data
-char tmp_str[7]; // temporary variable used in convert function
-char* convert_int16_to_str(int16_t i) { // converts int16 to string. Moreover, resulting strings will have the same length in the debug monitor.
-    sprintf(tmp_str, "%6d", i);
-    return tmp_str;
-}
+int pitch, roll;  // variables for accelerometer raw data
+int move = 0;
+MPU6050 mpu;
+
+//Sand
+int sandX = 3;
+int sandY = 3;
 
 //Startup Config
 int mode = 0;
@@ -48,16 +48,16 @@ uint8_t rotatingHue = 0;
 //Button stuff
 //unsigned long timePressed = 0;
 int buttonState = 0;
-int buttonLatch = 0;
+volatile int buttonLatch = 0;
 
 //Standby timer stuff
 unsigned long waitBeganAt = 0;
 unsigned long waitCountdownBegun = 0;
-const unsigned long standbyDelay = 30000;
+const unsigned long standbyDelay = 10000;
 
 // create our matrix based on matrix definition
 cLEDMatrix<MATRIX_WIDTH, MATRIX_HEIGHT, MATRIX_TYPE> matrix;
-//CRGB leds[64];
+CRGB *leds = matrix[0];
 
 //Battery stats
 int battPerc;
@@ -96,32 +96,16 @@ int ambientCheck(){
         Serial.println(ambientLight);
         masterBrightness = highBrightness;
     }
+    FastLED.setBrightness(masterBrightness);
     return(ambientLight);
 }
 
-void buttonChange() {
+void ISR_buttonChange() {
     if (digitalRead(button)==HIGH)
     {
-        //timePressed = millis();
-        //waitCountdownBegun = 1;
         buttonState = 1;
     } else {
-        //timePressed = 0;
         buttonState = 0;
-    }
-}
-
-void setTilt() {
-    if (accelerometer_x < 1000 && accelerometer_y < -8000) {
-        tilt = 1;
-    } else if (accelerometer_x < 1000 && accelerometer_y > 8000) {
-        tilt = 2;
-    } else if (accelerometer_x < -8000 && accelerometer_y < 1000) {
-        tilt = 3;
-    } else if (accelerometer_x > 8000 && accelerometer_y < 1000) {
-        tilt = 4;
-    } else {
-        tilt = 0;
     }
 }
 
@@ -138,6 +122,7 @@ int fadecurrentBrightness(int v){
                 FastLED.show();
                 FastLED.delay(5);
             }
+            ambientCheck();
         } else {
             for (int i = masterBrightness; i < v; i++) {
                 if (buttonState == 1) {
@@ -249,10 +234,20 @@ void holdOut(int hue, int duration) { //Duration is in seconds
 void standby(){ //Draws ≈ 18mA draw at peak
     fadecurrentBrightness(0);
     FastLED.clear();
-    FastLED.delay(10);
+    if(move!=1) {
+        while(move!=1) {
+            Serial.print(".");
+            checkMove();
+            FastLED.delay(100);
+        }
+    } else {
+        FastLED.delay(100);
+        mode = 0;
+    }
 }
 
 void transitionToStartWait(){
+    checkMove();
     while(currentBrightness>0) { // Draws ≈ 175mA
         if (buttonState == 1) {
             break;
@@ -266,6 +261,7 @@ void transitionToStartWait(){
     currentBrightness = 0;
     FastLED.setBrightness(currentBrightness);
     FastLED.show();
+    ambientCheck();
     while(currentBrightness<masterBrightness) { // Draws ≈ 175mA
         if (buttonState == 1) {
             break;
@@ -280,39 +276,54 @@ void transitionToStartWait(){
     FastLED.setBrightness(currentBrightness);
 }
 
+void gentleAmbient(){
+    checkMove();
+    int x = random(2, 6);
+    int y = random(2, 6);
+    int c = random(255);
+    matrix.DrawFilledRectangle(3, 3, 4, 4, CHSV(255, 0, 255));
+    while(currentBrightness<masterBrightness) {
+        FastLED.setBrightness(currentBrightness);
+        matrix.DrawFilledRectangle(3, 3, 4, 4, CHSV(255, 0, 255));
+        currentBrightness=currentBrightness+(masterBrightness/5);
+        FastLED.show();
+        FastLED.delay(20);
+    }
+    if((x==3&&y==3)||(x==3&&y==4)||(x==4&&y==3)||(x==4&&y==4)) {
+        //Do nothing - get another set of coordinates
+    } else {
+        for (float i = 0; i < 255; i++) {
+            if (buttonState == 1) {
+                break;
+            }
+            FastLED.clear();
+            matrix.DrawPixel(x, y, CHSV(c, 255, i));
+            matrix.DrawFilledRectangle(3, 3, 4, 4, CHSV(255, 0, 255-i));
+            FastLED.delay(10);
+            FastLED.show();
+        }
+        for (float i = 255; i > 0; i--) {
+            if (buttonState == 1) {
+                break;
+            }
+            FastLED.clear();
+            matrix.DrawPixel(x, y, CHSV(c, 255, i));
+            matrix.DrawFilledRectangle(3, 3, 4, 4, CHSV(255, 0, 255-i));
+            FastLED.delay(10);
+            FastLED.show();
+        }
+    }
+}
+
 void startWait() { //Draws ≈ 90mA draw at peak
+    checkMove();
     if  (waitCountdownBegun == 0) {
         waitBeganAt = millis();
         waitCountdownBegun = 1;
     }
     if ((millis() - waitBeganAt < standbyDelay)) {
-        Serial.println("Waiting...");
-        FastLED.clear();
-        int x = random(2, 6);
-        int y = random(2, 6);
-        int c = random(255);
-        if((x==3&&y==3)||(x==3&&y==4)||(x==4&&y==3)||(x==4&&y==4)) {
-            //Do nothing - get another set of coordinates
-        } else {
-            for (float i = 0; i < 255; i++) {
-                if (buttonState == 1) {
-                    break;
-                }
-                matrix.DrawPixel(x, y, CHSV(c, 255, i));
-                matrix.DrawFilledRectangle(3, 3, 4, 4, CHSV(255, 0, 100));
-                FastLED.delay(10);
-                FastLED.show();
-            }
-            for (float i = 255; i > 0; i--) {
-                if (buttonState == 1) {
-                    break;
-                }
-                matrix.DrawPixel(x, y, CHSV(c, 255, i));
-                matrix.DrawFilledRectangle(3, 3, 4, 4, CHSV(255, 0, 100));
-                FastLED.delay(10);
-                FastLED.show();
-            }
-        }
+        Serial.println("Gentle Ambient Mode Running...");
+        gentleAmbient();
     } else {
         Serial.println("Switching to standby");
         waitCountdownBegun = 0;
@@ -408,37 +419,126 @@ void ujjayiPranayama(int hue, int cycles) { // Draws ≈ 330mA at peak
     }
 }
 
-void sensory(int duration){ //Duration is in seconds // Draws ≈ 96mA at peak
+void sensory(int duration){ //Duration is in seconds
     long d = duration*1000;
+    int sensoryCentreGlow = 0;
+    int i = 0;
     if  (waitCountdownBegun == 0) {
         waitBeganAt = millis();
         waitCountdownBegun = 1;
         Serial.println("Sensory sequence started");
     }
-    if ((millis() - waitBeganAt) < d) {
-        FastLED.clear();
-        returnToMasterBrightness();
-        for (float i = 0; i < 255; i++) {
-            if (buttonState == 1) {
-                break;
-            }
-            matrix.DrawFilledRectangle(3, 3, 4, 4, CHSV(i, 255, 255));
-            FastLED.delay(20);
-            FastLED.show();
+    FastLED.clear();
+    returnToMasterBrightness();
+    while (buttonState != 1 && (millis() - waitBeganAt) < d) {
+        if (sensoryCentreGlow<masterBrightness) {
+            sensoryCentreGlow = sensoryCentreGlow+5;
         }
-    } else {
-        mode = 0;
-        transitionToStartWait();
-        Serial.println("Sensory mode complete");
-        waitCountdownBegun = 0;
+        matrix.DrawRectangle(0, 0, 7, 7, CHSV(i, 255, breatheEdgeLight));
+        matrix.DrawRectangle(3, 3, 4, 4, CHSV(i, 255, sensoryCentreGlow));
+        FastLED.delay(10);
+        FastLED.show();
+        i++;
     }
+    mode = 0;
+    transitionToStartWait();
+    Serial.println("Sensory mode complete");
+    waitCountdownBegun = 0;
+}
+
+void setTilt() {
+    int flat = 5;
+    int boundary = 15;
+    if (roll > boundary && pitch < flat && pitch > flat* -1) {
+        tilt = 1; //Forward
+    } else if (pitch > boundary && roll > boundary) {
+        tilt = 2; //Forward Right
+    } else if (pitch > boundary && roll < flat && roll > flat* -1) {
+        tilt = 3; //Right
+    } else if (pitch > boundary && roll < boundary* -1) {
+        tilt = 4; //Backward Right
+    } else if (roll < boundary* -1 && pitch < flat && pitch > flat* -1) {
+        tilt = 5; //Backward
+    } else if (pitch < boundary* -1 && roll < boundary* -1) {
+        tilt = 6; //Backward Left
+    } else if (pitch < boundary* -1 && roll < flat && roll > flat* -1) {
+        tilt = 7; //Left
+    } else if (pitch < boundary* -1 && roll > boundary) {
+        tilt = 8; //Forward Left
+    } else if (pitch > flat* -1 && pitch < flat && roll > flat* -1 && roll < flat ) {
+        tilt = 0; //Flat
+    }
+}
+
+void sand(){
+    setTilt();
+    switch(tilt) {
+    case 1:
+        //Serial.println("Forward");
+        if(sandY>0) {sandY--;}
+        if(sandX>3) {sandX--;}
+        if(sandX<3) {sandX++;}
+        break;
+    case 2:
+        //Serial.println("Forward Right");
+        if(sandY>0) {sandY--;}
+        if(sandX<6) {sandX++;}
+        break;
+    case 3:
+        //Serial.println("Right");
+        if(sandX<6) {sandX++;}
+        if(sandY>3) {sandY--;}
+        if(sandY<3) {sandY++;}
+        break;
+    case 4:
+        //Serial.println("Backward Right");
+        if(sandY<6) {sandY++;}
+        if(sandX<6) {sandX++;}
+        break;
+    case 5:
+        //Serial.println("Backward");
+        if(sandY<6) {sandY++;}
+        if(sandX>3) {sandX--;}
+        if(sandX<3) {sandX++;}
+        break;
+    case 6:
+        //Serial.println("Backward Left");
+        if(sandY<6) {sandY++;}
+        if(sandX>0) {sandX--;}
+        break;
+    case 7:
+        //Serial.println("Left");
+        if(sandX>0) {sandX--;}
+        if(sandY>3) {sandY--;}
+        if(sandY<3) {sandY++;}
+        break;
+    case 8:
+        //Serial.println("Forward Left");
+        if(sandY>0) {sandY--;}
+        if(sandX>0) {sandX--;}
+        break;
+    case 0:
+        //Serial.println("Flat");
+        if(sandY>3) {sandY--;}
+        if(sandY<3) {sandY++;}
+        if(sandX>3) {sandX--;}
+        if(sandX<3) {sandX++;}
+        break;
+    }
+
+    matrix.DrawFilledRectangle(sandX, sandY, sandX+1, sandY+1, CHSV(255, 0, 255));
+    matrix.DrawRectangle(sandX-1, sandY-1, sandX+2, sandY+2, CHSV(255, 0, 150));
+    for (int i = 0; i<64; i++) {
+        leds[i].fadeToBlackBy(15);
+    }
+    FastLED.show();
+    FastLED.delay(45);
 }
 
 void setup()
 {
     //Serial initial
-    Serial.println("Hello world!");
-    Serial.begin(9600);
+    Serial.begin(115200);
     Serial.println("Serial monitor started");
     // LED initial
     FastLED.addLeds<CHIPSET, ledControl, COLOR_ORDER>(matrix[0], matrix.Size()).setCorrection(TypicalSMD5050);
@@ -448,7 +548,7 @@ void setup()
     //IO intial
     pinMode(ledControl, OUTPUT);
     pinMode(button, INPUT);
-    attachInterrupt(digitalPinToInterrupt(button), buttonChange, CHANGE);
+    attachInterrupt(digitalPinToInterrupt(button), ISR_buttonChange, CHANGE);
     //Battery monitor initialisation
     pinMode(batteryMonitor, INPUT);
     pinMode(ldrSensor, INPUT);
@@ -456,11 +556,24 @@ void setup()
     FastLED.delay(50);
     ambientCheck();
     //Gyro initial
-    // Wire.begin();
-    // Wire.beginTransmission(MPU_ADDR); // Begins a transmission to the I2C slave (GY-521 board)
-    // Wire.write(0x6B); // PWR_MGMT_1 register
-    // Wire.write(0); // set to zero (wakes up the MPU-6050)
-    // Wire.endTransmission(true);
+    Serial.println("Initialize MPU6050");
+    while(!mpu.begin(MPU6050_SCALE_2000DPS, MPU6050_RANGE_16G))
+    {
+        Serial.println("Could not find a valid MPU6050 sensor, check wiring!");
+        delay(500);
+    }
+
+    mpu.setAccelPowerOnDelay(MPU6050_DELAY_3MS);
+    mpu.setIntFreeFallEnabled(false);
+    mpu.setIntZeroMotionEnabled(false);
+    mpu.setIntMotionEnabled(false);
+    mpu.setDHPFMode(MPU6050_DHPF_5HZ);
+    //mpu.setMotionDetectionThreshold(5);
+    //mpu.setMotionDetectionDuration(50);
+    mpu.setZeroMotionDetectionThreshold(20);
+    mpu.setZeroMotionDetectionDuration(75);
+
+    //Battery feedback
     if (battPerc > 50) {
         battHue = 86;
     } else if (battPerc > 25) {
@@ -480,23 +593,45 @@ void setup()
     }
 }
 
+void reboot() {
+    wdt_disable();
+    wdt_enable(WDTO_15MS);
+    while (1) {}
+}
+
+void checkMove(){
+    Activites act = mpu.readActivites();
+    if (act.isInactivity)
+    {
+        if (move == 0) {
+            move = 1; Serial.println(""); Serial.println("Movement detected");
+        } else {
+            move = 0; Serial.println("Stillness abounds");
+        }
+    }
+}
+
 void loop() {
-    // //Gyro test stuff
-    // Wire.beginTransmission(MPU_ADDR);
-    // Wire.write(0x3B); // starting with register 0x3B (ACCEL_XOUT_H) [MPU-6000 and MPU-6050 Register Map and Descriptions Revision 4.2, p.40]
-    // Wire.endTransmission(false); // the parameter indicates that the Arduino will send a restart. As a result, the connection is kept active.
-    // Wire.requestFrom(MPU_ADDR, 7*2, true); // request a total of 7*2=14 registers
-    // setTilt();
-    // // "Wire.read()<<8 | Wire.read();" means two registers are read and stored in the same variable
-    // accelerometer_x = Wire.read()<<8 | Wire.read(); // reading registers: 0x3B (ACCEL_XOUT_H) and 0x3C (ACCEL_XOUT_L)
-    // accelerometer_y = Wire.read()<<8 | Wire.read(); // reading registers: 0x3D (ACCEL_YOUT_H) and 0x3E (ACCEL_YOUT_L)
-    // accelerometer_z = Wire.read()<<8 | Wire.read(); // reading registers: 0x3F (ACCEL_ZOUT_H) and 0x40 (ACCEL_ZOUT_L)
-    // temperature = Wire.read()<<8 | Wire.read(); // reading registers: 0x41 (TEMP_OUT_H) and 0x42 (TEMP_OUT_L)
-    // gyro_x = Wire.read()<<8 | Wire.read(); // reading registers: 0x43 (GYRO_XOUT_H) and 0x44 (GYRO_XOUT_L)
-    // gyro_y = Wire.read()<<8 | Wire.read(); // reading registers: 0x45 (GYRO_YOUT_H) and 0x46 (GYRO_YOUT_L)
-    // gyro_z = Wire.read()<<8 | Wire.read(); // reading registers: 0x47 (GYRO_ZOUT_H) and 0x48 (GYRO_ZOUT_L)
-    ambientCheck();//Check and adjust masterBrightness
-    if (battPerc > 10) {
+    //Movement stuff
+    int n = Wire.endTransmission(false); // hold the I2C-bus
+    if (n!=0) //Check return of endTransmission
+    {
+        Serial.print("endTransmission error: ");
+        Serial.println(n);
+        if (n==4)
+        {
+            Serial.println("Resetting");
+            delay(1000);
+            reboot(); //call reset
+        }
+    }
+    // Read normalized values
+    Vector normAccel = mpu.readNormalizeAccel();
+    // Calculate Pitch & Roll
+    pitch = -(atan2(normAccel.XAxis, sqrt(normAccel.YAxis*normAccel.YAxis + normAccel.ZAxis*normAccel.ZAxis))*180.0)/M_PI;
+    roll = -(atan2(normAccel.YAxis, normAccel.ZAxis)*180.0)/M_PI;
+
+    if (battPerc < 101) {
         if (buttonState==1) {
             buttonLatch=1;
             while(currentBrightness>0) { // Draws ≈ 175mA
@@ -537,7 +672,7 @@ void loop() {
                 FastLED.setBrightness(currentBrightness);
                 if (mode==6)
                 {
-                    Serial.println("Woken up from standby");
+                    Serial.println("Woken up from standby by buttonpress");
                     mode = 0;
                 }
                 else if (mode < 5) {
@@ -549,27 +684,39 @@ void loop() {
                 }
                 buttonLatch=0;
             }
+            if (mode==6 && buttonLatch==0 && move==1)
+            {
+                Serial.println("Woken up from standby by movement");
+                mode = 0;
+            }
             switch (mode) {
             case 0:
                 startWait();
+                Serial.println("Main loop switch mode: 0");
                 break;
             case 1:
                 box(120, 4);
+                Serial.println("Main loop switch mode: 1");
                 break;
             case 2:
                 triangle(200, 4);
+                Serial.println("Main loop switch mode: 2");
                 break;
             case 3:
                 relax(50, 4);
+                Serial.println("Main loop switch mode: 3");
                 break;
             case 4:
                 ujjayiPranayama(15, 4);
+                Serial.println("Main loop switch mode: 4");
                 break;
             case 5:
                 sensory(1800);
+                Serial.println("Main loop switch mode: 5");
                 break;
             case 6:
                 standby();
+                Serial.println("Main loop switch mode: 6");
                 break;
             }
         }
@@ -581,27 +728,4 @@ void loop() {
         FastLED.clear();
         FastLED.delay(1000);
     }
-    // switch(tilt) {
-    // case 1:
-    //     Serial.println("Left");
-    //     matrix.DrawLine(7, 7, 7, 7, CHSV(0, 255, 50));
-    //     FastLED.show();
-    //     break;
-    // case 2:
-    //     Serial.println("Right");
-    //     FastLED.clear();
-    //     break;
-    // case 3:
-    //     Serial.println("Forward");
-    //     FastLED.clear();
-    //     break;
-    // case 4:
-    //     Serial.println("Backward");
-    //     FastLED.clear();
-    //     break;
-    // case 0:
-    //     Serial.println("Flat");
-    //     FastLED.clear();
-    //     break;
-    // }
 }
