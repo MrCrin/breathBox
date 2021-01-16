@@ -10,6 +10,7 @@
 #define button              2
 #define batteryMonitor      14
 #define ldrSensor           15
+#define moveInterrupt       3
 
 // Change the next defines to match your matrix type and size
 #define COLOR_ORDER         GRB
@@ -31,10 +32,12 @@ int breatheEdgeLight = masterBrightness/2;
 int currentBrightness = masterBrightness;
 int ambientLight = analogRead(ldrSensor);
 
-//Stuff for gyroscope
+//Stuff for movement
 int tilt = 0;
 int pitch, roll;  // variables for accelerometer raw data
-int move = 0;
+int movement = 0;
+unsigned long newMovementTime = 0;
+const unsigned long movementTimeout = 3000;
 MPU6050 mpu;
 
 //Sand
@@ -106,6 +109,14 @@ void ISR_buttonChange() {
         buttonState = 1;
     } else {
         buttonState = 0;
+    }
+}
+
+void ISR_checkMove() {
+    if (movement == 0) {
+        movement = 1;
+    } else {
+        movement = 0;
     }
 }
 
@@ -234,20 +245,14 @@ void holdOut(int hue, int duration) { //Duration is in seconds
 void standby(){ //Draws ≈ 18mA draw at peak
     fadecurrentBrightness(0);
     FastLED.clear();
-    if(move!=1) {
-        while(move!=1) {
-            Serial.print(".");
-            checkMove();
-            FastLED.delay(100);
-        }
-    } else {
+    while(movement!=1) {
+        Serial.print(".");
         FastLED.delay(100);
-        mode = 0;
     }
+        mode = 0;
 }
 
 void transitionToStartWait(){
-    checkMove();
     while(currentBrightness>0) { // Draws ≈ 175mA
         if (buttonState == 1) {
             break;
@@ -277,7 +282,6 @@ void transitionToStartWait(){
 }
 
 void gentleAmbient(){
-    checkMove();
     int x = random(2, 6);
     int y = random(2, 6);
     int c = random(255);
@@ -316,7 +320,6 @@ void gentleAmbient(){
 }
 
 void startWait() { //Draws ≈ 90mA draw at peak
-    checkMove();
     if  (waitCountdownBegun == 0) {
         waitBeganAt = millis();
         waitCountdownBegun = 1;
@@ -538,7 +541,7 @@ void sand(){
 void setup()
 {
     //Serial initial
-    Serial.begin(115200);
+    //Serial.begin(115200);
     Serial.println("Serial monitor started");
     // LED initial
     FastLED.addLeds<CHIPSET, ledControl, COLOR_ORDER>(matrix[0], matrix.Size()).setCorrection(TypicalSMD5050);
@@ -549,12 +552,15 @@ void setup()
     pinMode(ledControl, OUTPUT);
     pinMode(button, INPUT);
     attachInterrupt(digitalPinToInterrupt(button), ISR_buttonChange, CHANGE);
+    pinMode(moveInterrupt, INPUT);
+    attachInterrupt(digitalPinToInterrupt(moveInterrupt), ISR_checkMove, FALLING);
     //Battery monitor initialisation
     pinMode(batteryMonitor, INPUT);
     pinMode(ldrSensor, INPUT);
     batteryCheck();
     FastLED.delay(50);
     ambientCheck();
+
     //Gyro initial
     Serial.println("Initialize MPU6050");
     while(!mpu.begin(MPU6050_SCALE_2000DPS, MPU6050_RANGE_16G))
@@ -562,16 +568,12 @@ void setup()
         Serial.println("Could not find a valid MPU6050 sensor, check wiring!");
         delay(500);
     }
-
     mpu.setAccelPowerOnDelay(MPU6050_DELAY_3MS);
-    mpu.setIntFreeFallEnabled(false);
-    mpu.setIntZeroMotionEnabled(false);
-    mpu.setIntMotionEnabled(false);
+    mpu.setIntFreeFallEnabled(true);
+    mpu.setIntZeroMotionEnabled(true);
     mpu.setDHPFMode(MPU6050_DHPF_5HZ);
-    //mpu.setMotionDetectionThreshold(5);
-    //mpu.setMotionDetectionDuration(50);
-    mpu.setZeroMotionDetectionThreshold(20);
-    mpu.setZeroMotionDetectionDuration(75);
+    mpu.setZeroMotionDetectionThreshold(40);
+    mpu.setZeroMotionDetectionDuration(50);
 
     //Battery feedback
     if (battPerc > 50) {
@@ -599,18 +601,6 @@ void reboot() {
     while (1) {}
 }
 
-void checkMove(){
-    Activites act = mpu.readActivites();
-    if (act.isInactivity)
-    {
-        if (move == 0) {
-            move = 1; Serial.println(""); Serial.println("Movement detected");
-        } else {
-            move = 0; Serial.println("Stillness abounds");
-        }
-    }
-}
-
 void loop() {
     //Movement stuff
     int n = Wire.endTransmission(false); // hold the I2C-bus
@@ -630,7 +620,6 @@ void loop() {
     // Calculate Pitch & Roll
     pitch = -(atan2(normAccel.XAxis, sqrt(normAccel.YAxis*normAccel.YAxis + normAccel.ZAxis*normAccel.ZAxis))*180.0)/M_PI;
     roll = -(atan2(normAccel.YAxis, normAccel.ZAxis)*180.0)/M_PI;
-
     if (battPerc < 101) {
         if (buttonState==1) {
             buttonLatch=1;
@@ -684,39 +673,39 @@ void loop() {
                 }
                 buttonLatch=0;
             }
-            if (mode==6 && buttonLatch==0 && move==1)
+            if (mode==6 && buttonLatch==0 && movement==1)
             {
                 Serial.println("Woken up from standby by movement");
                 mode = 0;
             }
             switch (mode) {
             case 0:
-                startWait();
                 Serial.println("Main loop switch mode: 0");
+                startWait();
                 break;
             case 1:
-                box(120, 4);
                 Serial.println("Main loop switch mode: 1");
+                box(120, 4);
                 break;
             case 2:
-                triangle(200, 4);
                 Serial.println("Main loop switch mode: 2");
+                triangle(200, 4);
                 break;
             case 3:
-                relax(50, 4);
                 Serial.println("Main loop switch mode: 3");
+                relax(50, 4);
                 break;
             case 4:
-                ujjayiPranayama(15, 4);
                 Serial.println("Main loop switch mode: 4");
+                ujjayiPranayama(15, 4);
                 break;
             case 5:
-                sensory(1800);
                 Serial.println("Main loop switch mode: 5");
+                sensory(180000);
                 break;
             case 6:
-                standby();
                 Serial.println("Main loop switch mode: 6");
+                standby();
                 break;
             }
         }
