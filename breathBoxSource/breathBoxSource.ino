@@ -1,16 +1,20 @@
+#include <SPI.h>
+
 #include <FastLED.h>        //https://github.com/FastLED/FastLED
 #include <FastLED_GFX.h>    //needs a link
 #include <LEDMatrix.h>      //https://github.com/Jorgen-VikingGod/LEDMatrix
 #include <Wire.h>           //I2C Interfacing
 #include <avr/wdt.h>        //Watchdog for MPU hangs
+#include <avr/sleep.h>      //For low power sleep mode
 #include <MPU6050.h>        //MPU6050 Library
 
 // Pins
-#define ledControl          6
+#define ledControl          7
 #define button              2
-#define batteryMonitor      14
+#define batteryMonitor      0
 #define ldrSensor           15
 #define moveInterrupt       3
+#define debug               5
 
 // Change the next defines to match your matrix type and size
 #define COLOR_ORDER         GRB
@@ -27,7 +31,7 @@
 int lowBrightness = 50;
 int mediumBrightness = 150;
 int highBrightness = 255;
-int masterBrightness = 150;
+int masterBrightness = 255;
 int breatheEdgeLight = masterBrightness/2;
 int currentBrightness = masterBrightness;
 int ambientLight = analogRead(ldrSensor);
@@ -35,9 +39,10 @@ int ambientLight = analogRead(ldrSensor);
 //Stuff for movement
 int tilt = 0;
 int pitch, roll;  // variables for accelerometer raw data
-int movement = 0;
+volatile bool movement = false;
 unsigned long newMovementTime = 0;
 const unsigned long movementTimeout = 3000;
+int currentMovement = 0;
 MPU6050 mpu;
 
 //Sand
@@ -57,6 +62,8 @@ volatile int buttonLatch = 0;
 unsigned long waitBeganAt = 0;
 unsigned long waitCountdownBegun = 0;
 const unsigned long standbyDelay = 10000;
+unsigned long workmateTimeSinceReset = 0;
+unsigned long workmateDuration = 60000;
 
 // create our matrix based on matrix definition
 cLEDMatrix<MATRIX_WIDTH, MATRIX_HEIGHT, MATRIX_TYPE> matrix;
@@ -68,18 +75,25 @@ int battHue = 0;
 
 int batteryCheck() {
     int value = analogRead(batteryMonitor);
-    float voltage = (value * 4.8) / 1023;
-    int perc  = map(value, 700, 1023, 0, 100);
-    Serial.print("Battery is at ");
-    Serial.print(perc);
-    Serial.println("%");
-    Serial.print("Value is at ");
-    Serial.print(value);
-    Serial.println("");
-    Serial.print("Voltage is at ");
-    Serial.print(voltage);
-    Serial.println("V");
+    float voltage = (value * 4.90) / 1023;
+    int perc  = map(value, 630, 818, 0, 100);
+    // Serial.print("Battery is at ");
+    // Serial.print(perc);
+    // Serial.println("%");
+    // Serial.print("Value is at ");
+    // Serial.print(value);
+    // Serial.println("");
+    // Serial.print("Voltage is at ");
+    // Serial.print(voltage);
+    // Serial.println("V");
     battPerc = perc;
+    if (battPerc > 50) {
+        battHue = 86;
+    } else if (battPerc > 25) {
+        battHue = 43;
+    } else if (battPerc > 15) {
+        battHue = 12;
+    }
 }
 
 int ambientCheck(){
@@ -87,15 +101,15 @@ int ambientCheck(){
     if (ambientLight <= 200) //Low ambient light
     {
         masterBrightness = lowBrightness;
-        Serial.print("Master Brightness set to low - ambient light is ");
+        Serial.print("*Master Brightness set to low - ambient light is ");
         Serial.println(ambientLight);
     } else if (ambientLight > 200 && ambientLight <= 450) //Medium ambient light
     {
         masterBrightness = mediumBrightness;
-        Serial.print("Master Brightness set to medium - ambient light is ");
+        Serial.print("*Master Brightness set to medium - ambient light is ");
         Serial.println(ambientLight);
     } else { //Bright light
-        Serial.print("Master Brightness set to high - ambient light is ");
+        Serial.print("*Master Brightness set to high - ambient light is ");
         Serial.println(ambientLight);
         masterBrightness = highBrightness;
     }
@@ -113,10 +127,11 @@ void ISR_buttonChange() {
 }
 
 void ISR_checkMove() {
-    if (movement == 0) {
-        movement = 1;
+    //sleep_disable();
+    if (currentMovement == 1) {
+        movement = true;
     } else {
-        movement = 0;
+        movement = false;
     }
 }
 
@@ -245,11 +260,214 @@ void holdOut(int hue, int duration) { //Duration is in seconds
 void standby(){ //Draws ≈ 18mA draw at peak
     fadecurrentBrightness(0);
     FastLED.clear();
-    while(movement!=1) {
-        Serial.print(".");
-        FastLED.delay(100);
+    FastLED.delay(10);
+    Serial.print("Sleeping...");
+    while(checkCurrentMovement() == 0 && buttonState == 0 && (millis() - workmateTimeSinceReset < workmateDuration)){
+        delay(10);
     }
-        mode = 0;
+    Serial.println(" waking up");
+    delay(10);
+    if ((millis() - workmateTimeSinceReset > workmateDuration)) {
+        mode=8;
+    } else if (buttonState==1){
+        onWake();
+        mode=1;
+    } else {
+        onWake();
+        mode=0;
+    }
+    // sleep_enable();//Enabling sleep mode
+    // set_sleep_mode(SLEEP_MODE_PWR_DOWN);//Setting the sleep mode, in our case full sleep
+    // sleep_cpu();//activating sleep mode
+    // // <<<<<Stops here until interrupt
+}
+
+void workmateNotify(){
+    int r = 45;
+    int d = 1;
+    int b = 255;
+    int h;
+    int c = 0;
+    int fadeDelay = 25;
+    int preFade = 10;
+    ambientCheck();
+    currentBrightness = masterBrightness;
+    FastLED.setBrightness(currentBrightness);
+    FastLED.clear();
+    h=random(255);
+    while(c<5){
+        checkCurrentMovement();
+        if(currentMovement == 1 || buttonState == 1){mode=0; workmateTimeSinceReset=millis(); goto workmateNotifyBailout;}
+    for(int x=0; x<8; x++){
+        checkCurrentMovement();
+    if(currentMovement == 1 || buttonState == 1){mode=0; workmateTimeSinceReset=millis(); goto workmateNotifyBailout;}            
+       for (int i = 0; i < b; i+=r)
+        {
+        matrix.DrawRectangle(x, 0, x, 7, CHSV(h, 50, i));
+        FastLED.show();
+        FastLED.delay(d);
+        }
+        checkCurrentMovement();
+        if(currentMovement == 1 || buttonState == 1){mode=0; workmateTimeSinceReset=millis(); goto workmateNotifyBailout;} 
+        for (int i = 0; i<64; i++) {
+   
+            leds[i].fadeToBlackBy(preFade);
+        }
+    }
+    while(leds[63]) {
+        checkCurrentMovement();
+        if(currentMovement == 1 || buttonState == 1){mode=0; workmateTimeSinceReset=millis(); goto workmateNotifyBailout;} 
+        for (int i = 0; i<64; i++) {
+            leds[i].fadeToBlackBy(1);
+        }
+        FastLED.delay(fadeDelay);
+        FastLED.show();
+    }
+    FastLED.delay(2000);
+    h=random(255);
+    for(int y=0; y<8; y++){
+        checkCurrentMovement();
+        if(currentMovement == 1 || buttonState == 1){mode=0; workmateTimeSinceReset=millis(); goto workmateNotifyBailout;} 
+       for (int i = 0; i < b; i+=r)
+        {
+        matrix.DrawRectangle(0, y, 7, y, CHSV(h, 50, i));
+        FastLED.show();
+        FastLED.delay(d);
+        }
+        checkCurrentMovement();
+        if(currentMovement == 1 || buttonState == 1){mode=0; workmateTimeSinceReset=millis(); goto workmateNotifyBailout;} 
+        for (int i = 0; i<64; i++) {
+   
+            leds[i].fadeToBlackBy(preFade);
+        }
+    }
+    while(leds[63]) {
+        checkCurrentMovement();
+        if(currentMovement == 1 || buttonState == 1){mode=0; workmateTimeSinceReset=millis(); goto workmateNotifyBailout;} 
+        for (int i = 0; i<64; i++) {
+   
+            leds[i].fadeToBlackBy(1);
+        }
+        FastLED.delay(fadeDelay);
+        FastLED.show();
+    }
+    FastLED.delay(2000);
+    h=random(255);
+    for(int x=7; x>=0; x--){
+        checkCurrentMovement();
+        if(currentMovement == 1 || buttonState == 1){mode=0; workmateTimeSinceReset=millis(); goto workmateNotifyBailout;} 
+       for (int i = 0; i < b; i+=r)
+        {
+   
+        matrix.DrawRectangle(x, 0, x, 7, CHSV(h, 50, i));
+        FastLED.show();
+        FastLED.delay(d);
+        } 
+        checkCurrentMovement();
+        if(currentMovement == 1 || buttonState == 1){mode=0; workmateTimeSinceReset=millis(); goto workmateNotifyBailout;} 
+        for (int i = 0; i<64; i++) {
+   
+            leds[i].fadeToBlackBy(preFade);
+        }
+    }
+    while(leds[0]) {
+        checkCurrentMovement();
+        if(currentMovement == 1 || buttonState == 1){mode=0; workmateTimeSinceReset=millis(); goto workmateNotifyBailout;} 
+        for (int i = 0; i<64; i++) {
+   
+            leds[i].fadeToBlackBy(1);
+        }
+        FastLED.delay(fadeDelay);
+        FastLED.show();
+    }
+    FastLED.delay(2000);
+    h=random(255);
+    for(int y=7; y>=0; y--){
+        checkCurrentMovement();
+        if(currentMovement == 1 || buttonState == 1){mode=0; workmateTimeSinceReset=millis(); goto workmateNotifyBailout;} 
+       for (int i = 0; i < b; i+=r)
+        {
+   
+        matrix.DrawRectangle(0, y, 7, y, CHSV(h, 50, i));
+        FastLED.show();
+        FastLED.delay(d);
+        } 
+        checkCurrentMovement();
+        if(currentMovement == 1 || buttonState == 1){mode=0; workmateTimeSinceReset=millis(); goto workmateNotifyBailout;} 
+        for (int i = 0; i<64; i++) {
+   
+            leds[i].fadeToBlackBy(preFade);
+        }
+    }
+    while(leds[0]) {
+        checkCurrentMovement();
+        if(currentMovement == 1 || buttonState == 1){mode=0; workmateTimeSinceReset=millis(); goto workmateNotifyBailout;} 
+        for (int i = 0; i<64; i++) {
+   
+            leds[i].fadeToBlackBy(1);
+        }
+        FastLED.delay(fadeDelay);
+        FastLED.show();
+    }
+    c++;
+    FastLED.delay(5000);
+}
+workmateNotifyBailout:
+mode=7;
+workmateTimeSinceReset=millis();
+for(int i=0; i<255; i++){
+for (int i = 0; i<64; i++) {
+            leds[i].fadeToBlackBy(1);
+        }
+        FastLED.delay(5);
+    }
+    onWake();
+}
+
+void onWake(){
+    int r = 25;
+    int d = 5;
+    int b = 250;
+    ambientCheck();
+    batteryCheck();
+    currentBrightness = masterBrightness;
+    FastLED.setBrightness(currentBrightness);
+    FastLED.clear();
+    for (int i = 0; i < b; i+=r)
+    {
+        matrix.DrawRectangle(3, 3, 4, 4, CHSV(battHue, 100, i));
+        FastLED.show();
+        FastLED.delay(d);
+    }
+    for (int i = 0; i < b-25; i+=r)
+    {
+        matrix.DrawRectangle(2, 2, 5, 5, CHSV(battHue, 75, i));
+        FastLED.show();
+        FastLED.delay(d);
+    }
+    for (int i = 0; i < b-150; i+=r)
+    {
+        matrix.DrawRectangle(1, 1, 6, 6, CHSV(battHue, 50, i));
+        FastLED.show();
+        FastLED.delay(d);
+    }
+    for (int i = 0; i < b-200; i+=r)
+    {
+        matrix.DrawRectangle(0, 0, 7, 7, CHSV(battHue, 0, i));
+        FastLED.show();
+        FastLED.delay(d);
+    }
+    while(leds[28]) {
+        for (int i = 0; i<64; i++) {
+            leds[i].fadeToBlackBy(5);
+
+        }
+        FastLED.delay(4);
+        FastLED.show();
+    }
+    FastLED.clear();
+    FastLED.show();
+    currentBrightness=0;
 }
 
 void transitionToStartWait(){
@@ -289,7 +507,7 @@ void gentleAmbient(){
     while(currentBrightness<masterBrightness) {
         FastLED.setBrightness(currentBrightness);
         matrix.DrawFilledRectangle(3, 3, 4, 4, CHSV(255, 0, 255));
-        currentBrightness=currentBrightness+(masterBrightness/5);
+        currentBrightness=currentBrightness+(masterBrightness/10);
         FastLED.show();
         FastLED.delay(20);
     }
@@ -325,12 +543,18 @@ void startWait() { //Draws ≈ 90mA draw at peak
         waitCountdownBegun = 1;
     }
     if ((millis() - waitBeganAt < standbyDelay)) {
+        checkCurrentMovement();
+        if (currentMovement==1) {
+            waitBeganAt = millis();
+        }
         Serial.println("Gentle Ambient Mode Running...");
         gentleAmbient();
-    } else {
+    } else if (currentMovement!=1) {
         Serial.println("Switching to standby");
         waitCountdownBegun = 0;
-        mode = 6;
+        mode = 7;
+    } else {
+        waitBeganAt = millis();
     }
 }
 
@@ -450,6 +674,11 @@ void sensory(int duration){ //Duration is in seconds
 }
 
 void setTilt() {
+    //Read normalized values
+    Vector normAccel = mpu.readNormalizeAccel();
+    // Calculate Pitch & Roll
+    pitch = -(atan2(normAccel.XAxis, sqrt(normAccel.YAxis*normAccel.YAxis + normAccel.ZAxis*normAccel.ZAxis))*180.0)/M_PI;
+    roll = -(atan2(normAccel.YAxis, normAccel.ZAxis)*180.0)/M_PI;
     int flat = 5;
     int boundary = 15;
     if (roll > boundary && pitch < flat && pitch > flat* -1) {
@@ -474,6 +703,7 @@ void setTilt() {
 }
 
 void sand(){
+    while(mode==5 && buttonState == 0){
     setTilt();
     switch(tilt) {
     case 1:
@@ -530,38 +760,70 @@ void sand(){
     }
 
     matrix.DrawFilledRectangle(sandX, sandY, sandX+1, sandY+1, CHSV(255, 0, 255));
-    matrix.DrawRectangle(sandX-1, sandY-1, sandX+2, sandY+2, CHSV(255, 0, 150));
+    matrix.DrawRectangle(sandX-1, sandY-1, sandX+2, sandY+2, CHSV(255, 0, 100));
     for (int i = 0; i<64; i++) {
         leds[i].fadeToBlackBy(15);
     }
     FastLED.show();
-    FastLED.delay(45);
+    FastLED.delay(30);
+}
+}
+
+int checkCurrentMovement(){
+    Wire.beginTransmission(0x68); // Begins a transmission to the I2C slave (GY-521 board)
+    Wire.requestFrom(0x68, 1, true);
+    Wire.write(0x61);
+    int bit = Wire.read(); // set to zero (wakes up the MPU-6050)
+    if (bit==0)
+    {
+        currentMovement = 1;
+    } else {
+        currentMovement = 0;
+    }
+    Wire.endTransmission(false);
+    return(currentMovement);
 }
 
 void setup()
 {
-    //Serial initial
-    //Serial.begin(115200);
+    //IO intial
+    pinMode(ledControl, OUTPUT);
+    pinMode(debug, INPUT);
+    pinMode(button, INPUT);
+    attachInterrupt(digitalPinToInterrupt(button), ISR_buttonChange, CHANGE);
+    pinMode(moveInterrupt, INPUT);
+    attachInterrupt(digitalPinToInterrupt(moveInterrupt), ISR_checkMove, RISING);
+
+    //Only start Serial if debug jumper is pulled high
+    // if (digitalRead(debug)==HIGH)
+    // {
+    //     //Serial initial
+    //     Serial.begin(115200);
+    //     Serial.println("Serial monitor started");
+    // }
+
+    Serial.begin(115200);
     Serial.println("Serial monitor started");
+
     // LED initial
     FastLED.addLeds<CHIPSET, ledControl, COLOR_ORDER>(matrix[0], matrix.Size()).setCorrection(TypicalSMD5050);
     FastLED.setCorrection(TypicalLEDStrip);
     FastLED.setBrightness(masterBrightness);
     FastLED.clear(true);
-    //IO intial
-    pinMode(ledControl, OUTPUT);
-    pinMode(button, INPUT);
-    attachInterrupt(digitalPinToInterrupt(button), ISR_buttonChange, CHANGE);
-    pinMode(moveInterrupt, INPUT);
-    attachInterrupt(digitalPinToInterrupt(moveInterrupt), ISR_checkMove, FALLING);
     //Battery monitor initialisation
     pinMode(batteryMonitor, INPUT);
     pinMode(ldrSensor, INPUT);
     batteryCheck();
     FastLED.delay(50);
-    ambientCheck();
+
+    //Runs now and each time the device wakes up from sleep
+    onWake();
+
+    //Start workmate timer
+    workmateTimeSinceReset = millis();
 
     //Gyro initial
+    Wire.begin();
     Serial.println("Initialize MPU6050");
     while(!mpu.begin(MPU6050_SCALE_2000DPS, MPU6050_RANGE_16G))
     {
@@ -569,30 +831,33 @@ void setup()
         delay(500);
     }
     mpu.setAccelPowerOnDelay(MPU6050_DELAY_3MS);
-    mpu.setIntFreeFallEnabled(true);
+    mpu.setRange(MPU6050_RANGE_2G);
+    mpu.setMotionDetectionThreshold(2);
+    mpu.setMotionDetectionDuration(40);
+    mpu.setIntMotionEnabled(true); // Interrupts sent when motion detected
     mpu.setIntZeroMotionEnabled(true);
-    mpu.setDHPFMode(MPU6050_DHPF_5HZ);
+    mpu.setDHPFMode(MPU6050_DHPF_0_63HZ);
     mpu.setZeroMotionDetectionThreshold(40);
     mpu.setZeroMotionDetectionDuration(50);
 
     //Battery feedback
-    if (battPerc > 50) {
-        battHue = 86;
-    } else if (battPerc > 25) {
-        battHue = 43;
-    } else if (battPerc > 15) {
-        battHue = 12;
-    }
-    for (int i = 1; i < 8; i++) {
-        matrix.DrawLine(0, 0, i, i, CHSV(battHue, 255, 255));
-        FastLED.delay(30);
-        FastLED.show();
-    }
-    for (int i = 1; i < 8; i++) {
-        matrix.DrawLine(0, 0, i, i, CHSV(battHue, 255, 0));
-        FastLED.delay(30);
-        FastLED.show();
-    }
+    // if (battPerc > 50) {
+    //     battHue = 86;
+    // } else if (battPerc > 25) {
+    //     battHue = 43;
+    // } else if (battPerc > 15) {
+    //     battHue = 12;
+    // }
+    // for (int i = 1; i < 8; i++) {
+    //     matrix.DrawLine(0, 0, i, i, CHSV(battHue, 255, 255));
+    //     FastLED.delay(30);
+    //     FastLED.show();
+    // }
+    // for (int i = 1; i < 8; i++) {
+    //     matrix.DrawLine(0, 0, i, i, CHSV(battHue, 255, 0));
+    //     FastLED.delay(30);
+    //     FastLED.show();
+    // }
 }
 
 void reboot() {
@@ -615,12 +880,10 @@ void loop() {
             reboot(); //call reset
         }
     }
-    // Read normalized values
-    Vector normAccel = mpu.readNormalizeAccel();
-    // Calculate Pitch & Roll
-    pitch = -(atan2(normAccel.XAxis, sqrt(normAccel.YAxis*normAccel.YAxis + normAccel.ZAxis*normAccel.ZAxis))*180.0)/M_PI;
-    roll = -(atan2(normAccel.YAxis, normAccel.ZAxis)*180.0)/M_PI;
-    if (battPerc < 101) {
+    checkCurrentMovement();
+
+    //Main mode selection logic with shut off for low battery
+    if (battPerc > 10) {
         if (buttonState==1) {
             buttonLatch=1;
             while(currentBrightness>0) { // Draws ≈ 175mA
@@ -659,62 +922,82 @@ void loop() {
             if (buttonLatch==1) {
                 waitCountdownBegun = 0;
                 FastLED.setBrightness(currentBrightness);
-                if (mode==6)
+                if (mode==7)
                 {
                     Serial.println("Woken up from standby by buttonpress");
                     mode = 0;
                 }
-                else if (mode < 5) {
+                else if (mode < 7) {
                     mode++;
                     Serial.println("Moved forward one mode");
                 } else {
-                    mode = 1;
                     Serial.println("Moving back to start of modes");
+                    mode = 1;
                 }
                 buttonLatch=0;
             }
-            if (mode==6 && buttonLatch==0 && movement==1)
-            {
-                Serial.println("Woken up from standby by movement");
-                mode = 0;
-            }
+            // if (mode==7 && buttonLatch==0 && movement==true)
+            // {
+            //     Serial.println(" ");
+            //     Serial.println("Woken up from standby by movement");
+            //     mode = 0;
+            // }
             switch (mode) {
             case 0:
-                Serial.println("Main loop switch mode: 0");
+                Serial.println("*Main loop switch mode: 0");
                 startWait();
                 break;
             case 1:
-                Serial.println("Main loop switch mode: 1");
-                box(120, 4);
+                Serial.println("*Main loop switch mode: 1");
+                box(120, 20);
+                workmateTimeSinceReset = millis();
                 break;
             case 2:
-                Serial.println("Main loop switch mode: 2");
-                triangle(200, 4);
+                Serial.println("*Main loop switch mode: 2");
+                triangle(200, 20);
+                workmateTimeSinceReset = millis();
                 break;
             case 3:
-                Serial.println("Main loop switch mode: 3");
-                relax(50, 4);
+                Serial.println("*Main loop switch mode: 3");
+                relax(50, 20);
+                workmateTimeSinceReset = millis();
                 break;
             case 4:
-                Serial.println("Main loop switch mode: 4");
-                ujjayiPranayama(15, 4);
+                Serial.println("*Main loop switch mode: 4");
+                ujjayiPranayama(15, 20);
+                workmateTimeSinceReset = millis();
                 break;
             case 5:
-                Serial.println("Main loop switch mode: 5");
-                sensory(180000);
+                Serial.println("*Main loop switch mode: 5");
+                sand();
+                workmateTimeSinceReset = millis();
                 break;
             case 6:
-                Serial.println("Main loop switch mode: 6");
+                Serial.println("*Main loop switch mode: 6");
+                sensory(180);
+                break;
+            case 7:
+                Serial.println("*Main loop switch mode: 7");
                 standby();
+                break;
+            case 8:
+                Serial.println("*Main loop switch mode: 8");
+                workmateNotify();
                 break;
             }
         }
     } else {
-        FastLED.clear();
-        matrix.DrawLine(7, 7, 7, 7, CHSV(0, 255, 50));
-        FastLED.show();
-        FastLED.delay(1000);
-        FastLED.clear();
-        FastLED.delay(1000);
+        for (int i = 0; i < 3; ++i)
+        {
+            FastLED.clear();
+            matrix.DrawLine(7, 7, 7, 7, CHSV(0, 255, 50));
+            FastLED.show();
+            FastLED.delay(1000);
+            FastLED.clear();
+            FastLED.delay(1000);
+        }
+        // sleep_enable();
+        // set_sleep_mode(SLEEP_MODE_PWR_DOWN);
+        // sleep_cpu();
     }
 }
